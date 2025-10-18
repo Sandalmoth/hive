@@ -40,15 +40,10 @@ pub fn Hive(comptime T: type) type {
             head: Header,
             skip: [*]u16, // capacity + 1
             data: [*]union { node: Node, value: T }, // capacity
-            bytes: []const u8, // somewhat wasteful to store this
 
             fn create(gpa: std.mem.Allocator, capacity: usize) !*Segment {
-                const bytes = try gpa.alloc(u8, size(capacity));
-                const skip = std.mem.alignForward(
-                    usize,
-                    @intFromPtr(bytes.ptr),
-                    @alignOf(u16),
-                );
+                const bytes = try gpa.alloc(u16, size(capacity));
+                const skip = @intFromPtr(bytes.ptr);
                 const data = std.mem.alignForward(
                     usize,
                     skip + @sizeOf(u16) * (capacity + 1),
@@ -64,18 +59,18 @@ pub fn Hive(comptime T: type) type {
                     },
                     .skip = @ptrFromInt(skip),
                     .data = @ptrFromInt(data),
-                    .bytes = bytes,
                 };
             }
 
             fn destroy(segment: *Segment, gpa: std.mem.Allocator) void {
-                gpa.free(segment.head.bytes);
+                gpa.free(segment.skip[0..size(segment.head.capacity)]);
                 segment.* = undefined;
             }
 
+            /// number of u16's required to store the skipfields and the values
             fn size(capacity: usize) usize {
-                return @sizeOf(u16) * (capacity + 1) + @alignOf(u16) +
-                    @sizeOf(T) * capacity + @alignOf(T);
+                const n = @sizeOf(u16) * (capacity + 1) + @sizeOf(T) * capacity + @alignOf(T);
+                return (n + @sizeOf(u16) - 1) / @sizeOf(u16);
             }
         };
 
