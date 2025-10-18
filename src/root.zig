@@ -1,9 +1,8 @@
 const std = @import("std");
 
-const min_capacity = 16;
-
 pub fn Hive(comptime T: type) type {
     const nil = std.math.maxInt(u48);
+    const min_capacity = @max(1, 64 / @sizeOf(T));
 
     return struct {
         const Self = @This();
@@ -17,9 +16,8 @@ pub fn Hive(comptime T: type) type {
         };
 
         const Location = packed struct {
-            segment: u32,
+            segment: u48,
             offset: u16,
-            _pad: u16,
 
             fn toReference(it: Location) Reference {
                 return @bitCast(it);
@@ -36,29 +34,45 @@ pub fn Hive(comptime T: type) type {
                 next: u16,
                 prev: u16,
             };
+            const Data = union {
+                node: Node,
+                value: T,
+            };
 
             head: Header,
             skip: [*]u16, // capacity + 1
-            data: [*]union { node: Node, value: T }, // capacity
+            data: [*]Data, // capacity
 
             fn create(gpa: std.mem.Allocator, capacity: usize) !*Segment {
                 const bytes = try gpa.alloc(u16, size(capacity));
-                const skip = @intFromPtr(bytes.ptr);
-                const data = std.mem.alignForward(
+
+                // (sub)allocate and setup skiplist
+                const skip: [*]u16 = bytes.ptr;
+                skip[0] = capacity;
+                skip[capacity - 1] = capacity;
+                skip[capacity] = 0;
+
+                // (sub)allocate data segment and setup free-block
+                const data: [*]Data = @ptrFromInt(std.mem.alignForward(
                     usize,
-                    skip + @sizeOf(u16) * (capacity + 1),
+                    @intFromPtr(bytes.ptr) + @sizeOf(u16) * (capacity + 1),
                     @alignOf(T),
-                );
+                ));
                 std.debug.assert(
-                    data + @sizeOf(T) * capacity <= @intFromPtr(bytes.ptr) + bytes.len,
+                    @intFromPtr(data) + @sizeOf(T) * capacity <= @intFromPtr(bytes.ptr) + bytes.len,
                 );
+                data[0] = .{ .node = .{
+                    .prev = 0,
+                    .next = 0,
+                } };
+
                 return .{
                     .head = .{
                         .capacity = capacity,
-                        .next = undefined, // FIXME TODO
+                        .next = 0,
                     },
-                    .skip = @ptrFromInt(skip),
-                    .data = @ptrFromInt(data),
+                    .skip = skip,
+                    .data = data,
                 };
             }
 
@@ -78,20 +92,29 @@ pub fn Hive(comptime T: type) type {
         // kinda wish we didn't need both capacity and len but i don't see a way around it
         total_capacity: usize,
         len: usize,
-        next: u32,
+        next: u48,
         segments: std.MultiArrayList(Segment),
         reserve: ?*Segment,
 
         pub const empty: Self = .{
+            .total_capacity = 0,
+            .len = 0,
             .next = nil,
             .segments = .empty,
             .reserve = null,
         };
 
+        pub fn deinit(hive: *Self, gpa: std.mem.Allocator) void {
+            if (hive.reserve) |reserve| reserve.destroy(gpa);
+            hive.* = undefined;
+        }
+
         pub fn insert(hive: *Self, gpa: std.mem.Allocator, value: T) !Reference {
             if (hive.next == nil) hive.ensureUnusedCapacity(gpa, 1);
 
-            const head = hive.segments.items(.head)[hive.next];
+            const head = &hive.segments.items(.head)[hive.next];
+            const skip = hive.segments.items(.skip)[hive.next];
+            const data = hive.segments.items(.data)[hive.next];
 
             _ = value;
             return undefined;
