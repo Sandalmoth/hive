@@ -7,4 +7,9 @@ pub fn main() !void {
 
     var hive: Hive(u32) = .empty;
     defer hive.deinit(gpa);
+
+    for (0..100) |i| {
+        const ref = try hive.insert(gpa, @intCast(i));
+        std.debug.print("{}\n", .{ref});
+    }
 }

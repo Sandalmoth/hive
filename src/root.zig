@@ -10,19 +10,25 @@ pub fn Hive(comptime T: type) type {
         pub const Reference = enum(u64) {
             _,
 
-            fn toLocation(ix: Reference) Location {
-                return @bitCast(ix);
+            fn fromLocation(it: Location) Reference {
+                const bits: u64 = @bitCast(it);
+                return @enumFromInt(bits);
             }
         };
 
         const Location = packed struct {
-            segment: u48,
             offset: u16,
+            segment: u48,
 
-            fn toReference(it: Location) Reference {
-                return @bitCast(it);
+            fn fromReference(ix: Reference) Location {
+                const bits: u64 = @intFromEnum(ix);
+                return @bitCast(bits);
             }
         };
+
+        comptime {
+            std.debug.assert(@sizeOf(Reference) == @sizeOf(Location));
+        }
 
         const Segment = struct {
             const Header = struct {
@@ -43,7 +49,7 @@ pub fn Hive(comptime T: type) type {
             skip: [*]u16, // capacity + 1
             data: [*]Data, // capacity
 
-            fn create(gpa: std.mem.Allocator, capacity: usize) !*Segment {
+            fn create(gpa: std.mem.Allocator, capacity: u16) !Segment {
                 const bytes = try gpa.alloc(u16, size(capacity));
 
                 // (sub)allocate and setup skiplist
@@ -58,9 +64,8 @@ pub fn Hive(comptime T: type) type {
                     @intFromPtr(bytes.ptr) + @sizeOf(u16) * (capacity + 1),
                     @alignOf(T),
                 ));
-                std.debug.assert(
-                    @intFromPtr(data) + @sizeOf(T) * capacity <= @intFromPtr(bytes.ptr) + bytes.len,
-                );
+                std.debug.assert(@intFromPtr(data) + @sizeOf(Data) * capacity <=
+                    @intFromPtr(bytes.ptr) + @sizeOf(u16) * bytes.len);
                 data[0] = .{ .node = .{
                     .prev = 0,
                     .next = 0,
@@ -69,7 +74,10 @@ pub fn Hive(comptime T: type) type {
                 return .{
                     .head = .{
                         .capacity = capacity,
-                        .next = 0,
+                        .next = .{
+                            .segment = undefined,
+                            .offset = 0,
+                        },
                     },
                     .skip = skip,
                     .data = data,
@@ -83,7 +91,7 @@ pub fn Hive(comptime T: type) type {
 
             /// number of u16's required to store the skipfields and the values
             fn size(capacity: usize) usize {
-                const n = @sizeOf(u16) * (capacity + 1) + @sizeOf(T) * capacity + @alignOf(T);
+                const n = @sizeOf(u16) * (capacity + 1) + @sizeOf(Data) * capacity + @alignOf(Data);
                 return (n + @sizeOf(u16) - 1) / @sizeOf(u16);
             }
         };
@@ -110,21 +118,50 @@ pub fn Hive(comptime T: type) type {
         }
 
         pub fn insert(hive: *Self, gpa: std.mem.Allocator, value: T) !Reference {
-            if (hive.next == nil) hive.ensureUnusedCapacity(gpa, 1);
-
+            if (hive.next == nil) try hive.ensureUnusedCapacity(gpa, 1);
+            // fetch segment data
             const head = &hive.segments.items(.head)[hive.next];
             const skip = hive.segments.items(.skip)[hive.next];
             const data = hive.segments.items(.data)[hive.next];
+            const ix = head.next.offset;
+            std.debug.assert(skip[ix] > 0);
+            std.debug.assert(skip[ix] == skip[ix + skip[ix] - 1]);
+            const free_block = data[ix].node;
+            const free_block_len = skip[ix];
+            // update skip list
+            skip[ix + 1] = skip[ix] - 1;
+            if (skip[ix] > 2) skip[ix + skip[ix] - 1] -= 1;
+            skip[ix] = 0;
+            std.debug.assert(skip[ix + 1] < head.capacity - ix);
+            // update erasure list
+            if (free_block_len > 1) {
+                data[ix + 1] = .{ .node = .{
+                    .prev = ix + 1,
+                    .next = if (free_block.next != ix) free_block.next else ix + 1,
+                } };
+                head.next.offset += 1;
+            } else {
+                // free block is exhausted
+                std.debug.assert(data[ix].node.prev == ix);
+                if (free_block.next != ix) data[free_block.next].node.prev = free_block.next;
+                head.next.offset = data[ix].node.next;
+            }
+            data[ix] = .{ .value = value };
+            hive.len += 1;
 
-            _ = value;
-            return undefined;
+            // TODO if the segment is full, remove it from the segment free list
+
+            return .fromLocation(.{
+                .segment = hive.next,
+                .offset = ix,
+            });
         }
 
         pub fn ensureUnusedCapacity(
             hive: *Self,
             gpa: std.mem.Allocator,
             additional_count: usize,
-        ) !u32 {
+        ) !void {
             while (hive.len + additional_count > hive.total_capacity) {
                 // allocate new segments until we have enough capacity
                 const capacity: usize = @max(min_capacity, @min(
@@ -132,10 +169,10 @@ pub fn Hive(comptime T: type) type {
                     (hive.total_capacity * 13) >> 3,
                 ));
                 try hive.segments.ensureUnusedCapacity(gpa, 1);
-                var segment: Segment = try .create(gpa, capacity);
+                var segment: Segment = try .create(gpa, @intCast(capacity));
                 // prepend to list of segments with free slots
                 segment.head.next.segment = hive.next;
-                hive.next = hive.segments.len - 1;
+                hive.next = @intCast(hive.segments.len);
                 hive.segments.appendAssumeCapacity(segment);
                 hive.total_capacity += capacity;
             }
