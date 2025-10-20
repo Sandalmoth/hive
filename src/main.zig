@@ -15,7 +15,7 @@ pub fn main() !void {
     const rand = rng.random();
 
     std.debug.print("inserting\n", .{});
-    for (0..100) |i| {
+    for (0..20) |i| {
         const ref = try hive.insert(gpa, @intCast(i));
         std.debug.print("{}\n", .{ref});
         try refs.append(gpa, ref);

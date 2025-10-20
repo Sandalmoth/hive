@@ -207,6 +207,10 @@ pub fn Hive(comptime T: type) type {
             const skip = hive.segments.items(.skip)[ix_segment];
             const data = hive.segments.items(.data)[ix_segment];
 
+            std.debug.print("skip before", .{});
+            for (skip[0..head.capacity]) |s| std.debug.print(" {}", .{s});
+            std.debug.print("\n", .{});
+
             const value = data[ix].value;
             hive.len -= 1;
 
@@ -217,6 +221,7 @@ pub fn Hive(comptime T: type) type {
             // and the way to determine the case is to look at the skipfields
             const skip_left = if (ix == 0) 0 else skip[ix - 1];
             const skip_right = skip[ix + 1]; // NOTE may index into the padding skipfield
+            std.debug.print("{} {}\n", .{ skip_left, skip_right });
             if (skip_left == 0 and skip_right == 0) {
                 skip[ix] = 1;
                 data[ix] = .{ .node = .{
@@ -226,15 +231,19 @@ pub fn Hive(comptime T: type) type {
                     else
                         @intCast(head.first_free_block),
                 } };
+                if (head.first_free_block == nil) {
+                    if (hive.first_segment != nil) {
+                        hive.segments.items(.head)[hive.first_segment].prev_segment = ix_segment;
+                    }
+                    head.next_segment = hive.first_segment;
+                    hive.first_segment = ix_segment;
+                }
                 head.first_free_block = @intCast(ix);
-
-                // FIXME handle special of the first free in a segment
-                // in that case the segment needs to be added to the segment free list
             } else if (skip_left > 0 and skip_right == 0) {
                 const new_block_len = skip_left + 1;
                 skip[ix - skip[ix - 1]] = new_block_len;
                 skip[ix] = new_block_len;
-            } else if (skip_left == 0 and skip_right < 0) {
+            } else if (skip_left == 0 and skip_right > 0) {
                 const new_block_len = skip_right + 1;
                 skip[ix + skip[ix + 1]] = new_block_len;
                 skip[ix] = new_block_len;
@@ -285,6 +294,10 @@ pub fn Hive(comptime T: type) type {
                     };
                 }
             }
+
+            std.debug.print("skip after", .{});
+            for (skip[0..head.capacity]) |s| std.debug.print(" {}", .{s});
+            std.debug.print("\n", .{});
 
             return value;
         }
