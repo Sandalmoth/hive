@@ -105,6 +105,12 @@ pub fn Hive(comptime T: type) type {
         segments: std.MultiArrayList(Segment),
         reserve: ?Segment,
 
+        // FIXME so there's yet anotehr issue here
+        // lets say we want to iterate over all values
+        // it's easy per segment since we have the skip list
+        // but we need also a skip list for the segments array since it can have holes
+        // might be rewrite time, clearly the atomic unit is a fixed size skippable array thing
+
         // NOTE on the construction of the free lists
         // there is a list of segments starting with next_segment in the hive structure
         // then in each segment there is a list of free blocks
@@ -198,7 +204,6 @@ pub fn Hive(comptime T: type) type {
         }
 
         pub fn erase(hive: *Self, gpa: std.mem.Allocator, ref: Reference) T {
-            _ = gpa;
             const loc: Location = .fromReference(ref);
             const ix_segment: usize = @intCast(loc.segment);
             const ix: usize = loc.offset;
@@ -281,18 +286,35 @@ pub fn Hive(comptime T: type) type {
             } else unreachable;
 
             if (head.first_free_block == 0 and skip[ix] == head.capacity) {
-                // segment is completely empty, maybe free
-
-                // FIXME so here's another problem
-                // we need the list of segments with free blocks to be doubly linked
-                // otherwise we cannot remove a block from the middle of it
+                // unlink block from list of extant blocks
+                if (head.prev_segment != nil) {
+                    hive.segments.items(.head)[head.prev_segment].next_segment = head.next_segment;
+                }
+                if (head.next_segment != nil) {
+                    hive.segments.items(.head)[head.next_segment].prev_segment = head.prev_segment;
+                }
+                // add the slot in the multiarray to the slot free list
+                head.next_segment = hive.first_slot;
+                hive.first_slot = ix_segment;
+                // possibly keep memory block for future use
                 if (hive.reserve == null) {
                     hive.reserve = .{
-                        .head = head.*,
+                        .head = head.*, // NOTE we only actualy care about capacity
                         .skip = skip,
                         .data = data,
                     };
-                }
+                } else if (hive.reserve.?.head.capacity < head.capacity) {
+                    hive.reserve.?.destroy(gpa);
+                    hive.reserve = .{
+                        .head = head.*, // NOTE we only actualy care about capacity
+                        .skip = skip,
+                        .data = data,
+                    };
+                } else (Segment{
+                    .head = head.*,
+                    .skip = skip,
+                    .data = data,
+                }).destroy(gpa);
             }
 
             std.debug.print("skip after", .{});
