@@ -34,7 +34,8 @@ pub fn Hive(comptime T: type) type {
             const Header = struct {
                 capacity: usize,
                 next_segment: usize,
-                next_free_block: usize,
+                prev_segment: usize,
+                first_free_block: usize,
             };
 
             const Node = struct {
@@ -75,17 +76,17 @@ pub fn Hive(comptime T: type) type {
                 return .{
                     .head = .{
                         .capacity = capacity,
-                        .next_free_block = 0,
                         .next_segment = undefined,
+                        .prev_segment = nil,
+                        .first_free_block = 0,
                     },
                     .skip = skip,
                     .data = data,
                 };
             }
 
-            fn destroy(segment: *Segment, gpa: std.mem.Allocator) void {
+            fn destroy(segment: Segment, gpa: std.mem.Allocator) void {
                 gpa.free(segment.skip[0..size(segment.head.capacity)]);
-                segment.* = undefined;
             }
 
             /// number of u16's required to store the skipfields and the values
@@ -99,14 +100,15 @@ pub fn Hive(comptime T: type) type {
         // kinda wish we didn't need both capacity and len but i don't see a way around it
         total_capacity: usize,
         len: usize,
-        next_segment: usize,
+        first_segment: usize,
+        first_slot: usize,
         segments: std.MultiArrayList(Segment),
-        reserve: ?*Segment,
+        reserve: ?Segment,
 
         // NOTE on the construction of the free lists
         // there is a list of segments starting with next_segment in the hive structure
         // then in each segment there is a list of free blocks
-        // the next_segment and next_free_block are indices into segments and data respectively
+        // the next_segment and first_free_block are indices into segments and data respectively
         // where std.math.maxInt(usize) (== nil) is used to indicate that there is no element
         // the free blocks in each segment form a doubly linked list
         // where loopback indices (e.g. a node at i pointing to i) is used to indicate no element
@@ -114,7 +116,8 @@ pub fn Hive(comptime T: type) type {
         pub const empty: Self = .{
             .total_capacity = 0,
             .len = 0,
-            .next_segment = nil,
+            .first_segment = nil,
+            .first_slot = nil,
             .segments = .empty,
             .reserve = null,
         };
@@ -125,13 +128,13 @@ pub fn Hive(comptime T: type) type {
         }
 
         pub fn insert(hive: *Self, gpa: std.mem.Allocator, value: T) !Reference {
-            if (hive.next_segment == nil) try hive.ensureUnusedCapacity(gpa, 1);
+            if (hive.first_segment == nil) try hive.ensureUnusedCapacity(gpa, 1);
             // fetch segment data
-            const ix_segment = hive.next_segment;
+            const ix_segment = hive.first_segment;
             const head = &hive.segments.items(.head)[ix_segment];
             const skip = hive.segments.items(.skip)[ix_segment];
             const data = hive.segments.items(.data)[ix_segment];
-            const ix = head.next_free_block;
+            const ix = head.first_free_block;
             std.debug.assert(skip[ix] > 0);
             std.debug.assert(skip[ix] == skip[ix + skip[ix] - 1]);
             const free_block = data[ix].node;
@@ -147,16 +150,16 @@ pub fn Hive(comptime T: type) type {
                     .prev = @intCast(ix + 1),
                     .next = if (free_block.next != ix) free_block.next else @intCast(ix + 1),
                 } };
-                head.next_free_block += 1;
+                head.first_free_block += 1;
             } else {
                 // free block is exhausted
                 std.debug.assert(data[ix].node.prev == ix);
                 if (free_block.next != ix) {
                     data[free_block.next].node.prev = free_block.next;
-                    head.next_free_block = data[ix].node.next;
+                    head.first_free_block = data[ix].node.next;
                 } else {
                     // segment is completely full
-                    hive.next_segment = head.next_segment;
+                    hive.first_segment = head.next_segment;
                     head.next_segment = nil;
                 }
             }
@@ -183,14 +186,18 @@ pub fn Hive(comptime T: type) type {
                 try hive.segments.ensureUnusedCapacity(gpa, 1);
                 var segment: Segment = try .create(gpa, @intCast(capacity));
                 // prepend to list of segments with free slots
-                segment.head.next_segment = hive.next_segment;
-                hive.next_segment = @intCast(hive.segments.len);
+                segment.head.next_segment = hive.first_segment;
+                if (hive.first_segment != nil) {
+                    hive.segments.items(.head)[hive.first_segment].prev_segment =
+                        @intCast(hive.segments.len);
+                }
+                hive.first_segment = @intCast(hive.segments.len);
                 hive.segments.appendAssumeCapacity(segment);
                 hive.total_capacity += capacity;
             }
         }
 
-        pub fn erase(hive: *Self, gpa: std.mem.Allocator, ref: Reference) void {
+        pub fn erase(hive: *Self, gpa: std.mem.Allocator, ref: Reference) T {
             _ = gpa;
             const loc: Location = .fromReference(ref);
             const ix_segment: usize = @intCast(loc.segment);
@@ -200,7 +207,7 @@ pub fn Hive(comptime T: type) type {
             const skip = hive.segments.items(.skip)[ix_segment];
             const data = hive.segments.items(.data)[ix_segment];
 
-            const value = data[ix];
+            const value = data[ix].value;
             hive.len -= 1;
 
             // there are four options for the free block
@@ -214,22 +221,70 @@ pub fn Hive(comptime T: type) type {
                 skip[ix] = 1;
                 data[ix] = .{ .node = .{
                     .prev = @intCast(ix),
-                    .next = if (head.next_free_block == nil)
+                    .next = if (head.first_free_block == nil)
                         @intCast(ix)
                     else
-                        head.next_free_block,
+                        @intCast(head.first_free_block),
                 } };
-                head.next_free_block = @intCast(ix);
+                head.first_free_block = @intCast(ix);
+
+                // FIXME handle special of the first free in a segment
+                // in that case the segment needs to be added to the segment free list
             } else if (skip_left > 0 and skip_right == 0) {
-                skip[ix - skip[ix - 1]] = skip_left + 1;
-                skip[ix] = skip_left + 1;
+                const new_block_len = skip_left + 1;
+                skip[ix - skip[ix - 1]] = new_block_len;
+                skip[ix] = new_block_len;
             } else if (skip_left == 0 and skip_right < 0) {
-                //
+                const new_block_len = skip_right + 1;
+                skip[ix + skip[ix + 1]] = new_block_len;
+                skip[ix] = new_block_len;
+                const old_block = data[ix + 1].node;
+                data[ix] = .{ .node = .{
+                    .prev = if (old_block.prev != ix + 1) old_block.prev else @intCast(ix),
+                    .next = if (old_block.next != ix + 1) old_block.next else @intCast(ix),
+                } };
+                // since the free block has moved one step over, update the linked list
+                if (old_block.prev == ix + 1) {
+                    head.first_free_block = @intCast(ix);
+                } else {
+                    data[old_block.prev].node.next = @intCast(ix);
+                }
+                if (old_block.next != ix + 1) {
+                    data[old_block.next].node.prev = @intCast(ix);
+                }
             } else if (skip_left > 0 and skip_right > 0) {
-                //
+                const new_block_len = skip_left + skip_right + 1;
+                skip[ix - skip[ix - 1]] = new_block_len;
+                skip[ix + skip[ix + 1]] = new_block_len;
+                const old_block = data[ix + 1].node;
+                if (old_block.prev != ix + 1) {
+                    data[old_block.prev].node.next = if (old_block.next != ix + 1)
+                        old_block.next
+                    else
+                        @intCast(old_block.prev);
+                }
+                if (old_block.next != ix + 1) {
+                    data[old_block.prev].node.prev = if (old_block.prev != ix + 1)
+                        old_block.prev
+                    else
+                        @intCast(old_block.next);
+                }
             } else unreachable;
 
-            // TODO test if the segment is empty
+            if (head.first_free_block == 0 and skip[ix] == head.capacity) {
+                // segment is completely empty, maybe free
+
+                // FIXME so here's another problem
+                // we need the list of segments with free blocks to be doubly linked
+                // otherwise we cannot remove a block from the middle of it
+                if (hive.reserve == null) {
+                    hive.reserve = .{
+                        .head = head.*,
+                        .skip = skip,
+                        .data = data,
+                    };
+                }
+            }
 
             return value;
         }
