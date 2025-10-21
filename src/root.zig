@@ -132,6 +132,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
                     .prev = ix,
                     .next = array.first_free_block orelse ix,
                 } };
+                if (array.first_free_block) |first| array.data[first].node.prev = ix;
                 array.first_free_block = ix;
             } else if (skip_left > 0 and skip_right == 0) {
                 const new_block_len = skip_left + 1;
@@ -159,18 +160,24 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
                 const new_block_len = skip_left + skip_right + 1;
                 skip[ix - skip[ix - 1]] = new_block_len;
                 skip[ix + skip[ix + 1]] = new_block_len;
+                // now remove the skip block on the right
                 const old_block = data[ix + 1].node;
                 if (old_block.prev != ix + 1) {
                     data[old_block.prev].node.next = if (old_block.next != ix + 1)
                         old_block.next
                     else
-                        @intCast(old_block.prev);
+                        old_block.prev;
+                } else {
+                    array.first_free_block = if (old_block.next != ix + 1)
+                        old_block.next
+                    else
+                        null;
                 }
                 if (old_block.next != ix + 1) {
-                    data[old_block.prev].node.prev = if (old_block.prev != ix + 1)
+                    data[old_block.next].node.prev = if (old_block.prev != ix + 1)
                         old_block.prev
                     else
-                        @intCast(old_block.next);
+                        old_block.next;
                 }
             } else unreachable;
 
@@ -189,7 +196,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
                 var i = first_free_block;
                 while (true) {
                     const node = array.data[i].node;
-                    std.debug.print("({} {})", .{ node.prev, node.next });
+                    std.debug.print("({} [{}] {})", .{ node.prev, i, node.next });
                     if (node.next == i) break;
                     std.debug.print("->", .{});
                     i = node.next;
