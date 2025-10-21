@@ -1,5 +1,160 @@
 const std = @import("std");
 
+fn SkipArray(comptime T: type, comptime Skip: type) type {
+    return struct {
+        const Self = @This();
+
+        const Node = struct {
+            next: Skip,
+            prev: Skip,
+        };
+        const Data = union {
+            node: Node,
+            value: T,
+        };
+
+        capacity: usize,
+        first_free_block: ?Skip,
+        skip: [*]Skip, // capacity + 1
+        data: [*]Data, // capacity
+
+        fn create(gpa: std.mem.Allocator, capacity: usize) !Self {
+            std.debug.assert(capacity <= std.math.maxInt(Skip));
+            const backing_memory = try gpa.alloc(Skip, size(capacity));
+
+            // (sub)allocate and setup skiplist
+            const skip: [*]u16 = backing_memory.ptr;
+            skip[0] = @intCast(capacity);
+            skip[capacity - 1] = @intCast(capacity);
+            skip[capacity] = 0;
+
+            // (sub)allocate data segment and setup free-block
+            const data: [*]Data = @ptrFromInt(std.mem.alignForward(
+                usize,
+                @intFromPtr(backing_memory.ptr) + @sizeOf(Skip) * (capacity + 1),
+                @alignOf(T),
+            ));
+            data[0] = .{ .node = .{
+                .prev = 0,
+                .next = 0,
+            } };
+
+            return .{
+                .capacity = capacity,
+                .first_free_block = 0,
+                .skip = skip,
+                .data = data,
+            };
+        }
+
+        fn destroy(array: *Self, gpa: std.mem.Allocator) void {
+            const backing_memory = array.skip[0..size(array.capacity)];
+            gpa.free(backing_memory);
+            array.* = undefined;
+        }
+
+        fn expand(array: *Self, gpa: std.mem.Allocator, additional_capacity: usize) void {
+            _ = array;
+            _ = gpa;
+            _ = additional_capacity;
+        }
+
+        fn size(capacity: usize) usize {
+            const sizeof_skip = @sizeOf(Skip) * (capacity + 1) + @alignOf(Skip);
+            const sizeof_data = @sizeOf(Data) * (capacity + 1) + @alignOf(Data);
+            return (sizeof_skip + sizeof_data + @sizeOf(Skip) - 1) / @sizeOf(Skip);
+        }
+
+        fn full(array: Self) bool {
+            return array.first_free_block == null;
+        }
+
+        fn empty(array: Self) bool {
+            return array.skip[0] == array.capacity;
+        }
+
+        fn insertAssumeCapacity(array: *Self, value: T) Skip {
+            std.debug.assert(array.first_free_block != null);
+
+            const ix = array.first_free_block.?;
+            const skip = array.skip;
+            const data = array.data;
+
+            std.debug.assert(skip[ix] > 0);
+            std.debug.assert(skip[ix] == skip[ix + skip[ix] - 1]);
+            const free_block = data[ix].node;
+            const free_block_len = skip[ix];
+
+            skip[ix + 1] = skip[ix] - 1;
+            if (skip[ix] > 2) skip[ix + skip[ix] - 1] -= 1;
+            skip[ix] = 0;
+            std.debug.assert(skip[ix + 1] < array.capacity - ix);
+
+            data[ix] = .{ .value = value };
+
+            if (free_block_len > 1) {
+                data[ix + 1] = .{ .node = .{
+                    .prev = @intCast(ix + 1),
+                    .next = if (free_block.next != ix) free_block.next else @intCast(ix + 1),
+                } };
+                array.first_free_block.? += 1;
+            } else {
+                // free block is exhausted, remove from free list
+                std.debug.assert(free_block.prev == ix);
+                if (free_block.next != ix) {
+                    data[free_block.next].node.prev = free_block.next;
+                    array.first_free_block = free_block.next;
+                } else {
+                    // segment is completely full
+                    array.first_free_block = null;
+                }
+            }
+
+            return @intCast(ix);
+        }
+
+        fn erase(array: *Self, index: Skip) void {
+            _ = array;
+            _ = index;
+        }
+
+        fn debugPrint(array: Self) void {
+            std.debug.print("SkipArray <{s}>\n", .{@typeName(T)});
+            std.debug.print("  skipfield size: {s}\n", .{@typeName(Skip)});
+            std.debug.print("  capacity: {}\n", .{array.capacity});
+            std.debug.print("  skip:", .{});
+            for (array.skip[0 .. array.capacity + 1]) |skip| std.debug.print(" {}", .{skip});
+            std.debug.print("\n", .{});
+            std.debug.print("  freelist: ", .{});
+            if (array.first_free_block) |first_free_block| {
+                var i = first_free_block;
+                while (true) {
+                    const node = array.data[i].node;
+                    std.debug.print("({} {})", .{ node.prev, node.next });
+                    if (node.next == i) break;
+                    std.debug.print("->", .{});
+                    i = node.next;
+                }
+            } else {
+                std.debug.print("[skiparray is full]", .{});
+            }
+            std.debug.print("\n", .{});
+        }
+    };
+}
+
+test "SkipArray" {
+    const N = 10;
+    var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
+    defer a.destroy(std.testing.allocator);
+
+    a.debugPrint();
+    for (0..N) |i| {
+        _ = a.insertAssumeCapacity(i);
+        a.debugPrint();
+    }
+}
+
 pub fn Hive(comptime T: type) type {
     const nil = std.math.maxInt(usize);
     const min_capacity = @max(1, 64 / @sizeOf(T));
@@ -110,6 +265,9 @@ pub fn Hive(comptime T: type) type {
         // it's easy per segment since we have the skip list
         // but we need also a skip list for the segments array since it can have holes
         // might be rewrite time, clearly the atomic unit is a fixed size skippable array thing
+
+        // though that's still not obviously possible
+        // because the root one needs to be able to expand and might need a bigger skipfield
 
         // NOTE on the construction of the free lists
         // there is a list of segments starting with next_segment in the hive structure
