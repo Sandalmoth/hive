@@ -113,15 +113,74 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             return @intCast(ix);
         }
 
-        fn erase(array: *Self, index: Skip) void {
-            _ = array;
-            _ = index;
+        fn erase(array: *Self, ix: Skip) T {
+            const skip = array.skip;
+            const data = array.data;
+
+            const value = data[ix].value;
+
+            const skip_left = if (ix == 0) 0 else skip[ix - 1];
+            const skip_right = skip[ix + 1]; // NOTE may index into the padding skipfield
+            // there are four options for the free block
+            // a) both neighbours occupied, form new free block
+            // b/c) one neighbour occupied (left/right), extend free block
+            // d) both neighbours free, merge into the free block on the left
+            // and the way to determine the case is to look at the skipfields
+            if (skip_left == 0 and skip_right == 0) {
+                skip[ix] = 1;
+                data[ix] = .{ .node = .{
+                    .prev = ix,
+                    .next = array.first_free_block orelse ix,
+                } };
+                array.first_free_block = ix;
+            } else if (skip_left > 0 and skip_right == 0) {
+                const new_block_len = skip_left + 1;
+                skip[ix - skip[ix - 1]] = new_block_len;
+                skip[ix] = new_block_len;
+            } else if (skip_left == 0 and skip_right > 0) {
+                const new_block_len = skip_right + 1;
+                skip[ix + skip[ix + 1]] = new_block_len;
+                skip[ix] = new_block_len;
+                const old_block = data[ix + 1].node;
+                data[ix] = .{ .node = .{
+                    .prev = if (old_block.prev != ix + 1) old_block.prev else ix,
+                    .next = if (old_block.next != ix + 1) old_block.next else ix,
+                } };
+                // since the free block has moved one step over, update the linked list
+                if (old_block.prev == ix + 1) {
+                    array.first_free_block = ix;
+                } else {
+                    data[old_block.prev].node.next = ix;
+                }
+                if (old_block.next != ix + 1) {
+                    data[old_block.next].node.prev = ix;
+                }
+            } else if (skip_left > 0 and skip_right > 0) {
+                const new_block_len = skip_left + skip_right + 1;
+                skip[ix - skip[ix - 1]] = new_block_len;
+                skip[ix + skip[ix + 1]] = new_block_len;
+                const old_block = data[ix + 1].node;
+                if (old_block.prev != ix + 1) {
+                    data[old_block.prev].node.next = if (old_block.next != ix + 1)
+                        old_block.next
+                    else
+                        @intCast(old_block.prev);
+                }
+                if (old_block.next != ix + 1) {
+                    data[old_block.prev].node.prev = if (old_block.prev != ix + 1)
+                        old_block.prev
+                    else
+                        @intCast(old_block.next);
+                }
+            } else unreachable;
+
+            return value;
         }
 
         fn debugPrint(array: Self) void {
-            std.debug.print("SkipArray <{s}>\n", .{@typeName(T)});
-            std.debug.print("  skipfield size: {s}\n", .{@typeName(Skip)});
-            std.debug.print("  capacity: {}\n", .{array.capacity});
+            std.debug.print("SkipArray <{s}>, ", .{@typeName(T)});
+            std.debug.print("skipfield size: {s}, ", .{@typeName(Skip)});
+            std.debug.print("capacity: {}\n", .{array.capacity});
             std.debug.print("  skip:", .{});
             for (array.skip[0 .. array.capacity + 1]) |skip| std.debug.print(" {}", .{skip});
             std.debug.print("\n", .{});
@@ -145,14 +204,31 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
 
 test "SkipArray" {
     const N = 10;
+    var ixs: std.ArrayList(u16) = .empty;
+    defer ixs.deinit(std.testing.allocator);
+    var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
+    const rand = rng.random();
+
     var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
     defer a.destroy(std.testing.allocator);
-
     a.debugPrint();
+    try std.testing.expect(a.empty());
+
+    std.debug.print("--- inserting ---\n", .{});
     for (0..N) |i| {
-        _ = a.insertAssumeCapacity(i);
+        const ix = a.insertAssumeCapacity(i);
+        try ixs.append(std.testing.allocator, ix);
         a.debugPrint();
     }
+    try std.testing.expect(a.full());
+
+    std.debug.print("--- erasing ---\n", .{});
+    rand.shuffle(u16, ixs.items);
+    for (ixs.items) |ix| {
+        _ = a.erase(ix);
+        a.debugPrint();
+    }
+    try std.testing.expect(a.empty());
 }
 
 pub fn Hive(comptime T: type) type {
