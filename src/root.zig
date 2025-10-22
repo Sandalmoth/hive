@@ -411,6 +411,53 @@ test "SkipArray expand" {
 }
 
 pub fn Hive(comptime T: type) type {
+    const segments_initial_capacity = 4;
+    return struct {
+        const Self = @This();
+
+        const Segment = struct {
+            array: SkipArray(T, u16),
+            next: u32,
+            prev: u32,
+        };
+
+        capacity: usize,
+        len: usize,
+        segments: SkipArray(Segment, u32),
+        first_free_segment: ?u32,
+        reserve: ?Segment,
+
+        pub fn init(gpa: std.mem.Allocator) !Hive {
+            const segments = try SkipArray(Segment, u32).init(gpa, segments_initial_capacity);
+            return .{
+                .capacity = 0,
+                .len = 0,
+                .segments = segments,
+                .first_free_segment = null,
+                .reserve = null,
+            };
+        }
+
+        pub fn deinit(hive: *Self, gpa: std.mem.Allocator) void {
+            var it = hive.segments.iterator();
+            while (it.next()) |kv| kv.value_ptr.array.deinit(gpa);
+            hive.segments.deinit(gpa);
+            hive.* = undefined;
+        }
+
+        pub fn ensureUnusedCapacity(
+            hive: *Self,
+            gpa: std.mem.Allocator,
+            additional_count: usize,
+        ) !void {
+            _ = hive;
+            _ = gpa;
+            _ = additional_count;
+        }
+    };
+}
+
+pub fn OldHive(comptime T: type) type {
     const nil = std.math.maxInt(usize);
     const min_capacity = @max(1, 64 / @sizeOf(T));
 
