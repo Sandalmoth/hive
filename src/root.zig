@@ -18,7 +18,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
         data: [*]Data, // capacity
         first_free_block: ?Skip,
 
-        fn create(gpa: std.mem.Allocator, capacity: usize) !Self {
+        fn init(gpa: std.mem.Allocator, capacity: usize) !Self {
             std.debug.assert(capacity <= std.math.maxInt(Skip));
             const backing_memory = try gpa.alloc(Skip, size(capacity));
 
@@ -47,7 +47,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             };
         }
 
-        fn destroy(array: *Self, gpa: std.mem.Allocator) void {
+        fn deinit(array: *Self, gpa: std.mem.Allocator) void {
             const backing_memory = array.skip[0..size(array.capacity)];
             gpa.free(backing_memory);
             array.* = undefined;
@@ -70,7 +70,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             @memcpy(data, array.data[0..array.capacity]);
 
             // setup skip list and free block
-            // a) the array does not end with a free block - create new and add to list
+            // a) the array does not end with a free block - init new and add to list
             // b) the array ends with a free block - extend it
             if (skip[array.capacity - 1] == 0) {
                 skip[array.capacity] = @intCast(additional_capacity);
@@ -288,8 +288,8 @@ test "SkipArray" {
     //     var ixs: std.ArrayList(u16) = .empty;
     //     defer ixs.deinit(std.testing.allocator);
 
-    //     var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
-    //     defer a.destroy(std.testing.allocator);
+    //     var a: SkipArray(usize, u16) = try .init(std.testing.allocator, N);
+    //     defer a.deinit(std.testing.allocator);
     //     a.debugPrint();
     //     try std.testing.expect(a.empty());
 
@@ -316,8 +316,8 @@ test "SkipArray" {
         var ixs: std.ArrayList(Pair) = .empty;
         defer ixs.deinit(std.testing.allocator);
 
-        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
-        defer a.destroy(std.testing.allocator);
+        var a: SkipArray(usize, u16) = try .init(std.testing.allocator, N);
+        defer a.deinit(std.testing.allocator);
 
         var n: usize = 0;
         var i: usize = 0;
@@ -372,16 +372,16 @@ test "SkipArray" {
 test "SkipArray expand" {
     // TODO how should we test that this is expected behaviour? debugPrint looks fine though...
     {
-        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
-        defer a.destroy(std.testing.allocator);
+        var a: SkipArray(usize, u16) = try .init(std.testing.allocator, 2);
+        defer a.deinit(std.testing.allocator);
         // a.debugPrint();
         try a.expand(std.testing.allocator, 1);
         // a.debugPrint();
     }
 
     {
-        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
-        defer a.destroy(std.testing.allocator);
+        var a: SkipArray(usize, u16) = try .init(std.testing.allocator, 2);
+        defer a.deinit(std.testing.allocator);
         _ = a.insertAssumeCapacity(0);
         _ = a.insertAssumeCapacity(1);
         // a.debugPrint();
@@ -390,8 +390,8 @@ test "SkipArray expand" {
     }
 
     {
-        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
-        defer a.destroy(std.testing.allocator);
+        var a: SkipArray(usize, u16) = try .init(std.testing.allocator, 2);
+        defer a.deinit(std.testing.allocator);
         _ = a.insertAssumeCapacity(0);
         // a.debugPrint();
         try a.expand(std.testing.allocator, 1);
@@ -399,8 +399,8 @@ test "SkipArray expand" {
     }
 
     {
-        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
-        defer a.destroy(std.testing.allocator);
+        var a: SkipArray(usize, u16) = try .init(std.testing.allocator, 2);
+        defer a.deinit(std.testing.allocator);
         _ = a.insertAssumeCapacity(0);
         _ = a.insertAssumeCapacity(1);
         _ = a.erase(0);
