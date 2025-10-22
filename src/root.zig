@@ -184,6 +184,35 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             return value;
         }
 
+        const Iterator = struct {
+            const Pair = struct {
+                index: Skip,
+                value_ptr: *T,
+            };
+
+            array: *Self,
+            cursor: switch (Skip) {
+                u16 => u32,
+                u32 => u64,
+                else => @compileError("unsupported skipfield size"),
+            },
+
+            fn next(it: *Iterator) ?Pair {
+                if (it.cursor >= it.array.capacity) return null;
+                const pair: Pair = .{
+                    .index = @intCast(it.cursor),
+                    .value_ptr = &it.array.data[it.cursor].value,
+                };
+                it.cursor += 1;
+                it.cursor += it.array.skip[it.cursor];
+                return pair;
+            }
+        };
+
+        fn iterator(array: *Self) Iterator {
+            return .{ .array = array, .cursor = array.skip[0] };
+        }
+
         fn debugPrint(array: Self) void {
             std.debug.print("SkipArray <{s}>, ", .{@typeName(T)});
             std.debug.print("skipfield size: {s}, ", .{@typeName(Skip)});
@@ -228,6 +257,11 @@ test "SkipArray" {
         a.debugPrint();
     }
     try std.testing.expect(a.full());
+
+    var it = a.iterator();
+    while (it.next()) |kv| {
+        std.debug.print("{} {}, ", .{ kv.index, kv.value_ptr.* });
+    }
 
     std.debug.print("--- erasing ---\n", .{});
     rand.shuffle(u16, ixs.items);
