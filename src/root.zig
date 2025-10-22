@@ -14,9 +14,9 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
         };
 
         capacity: usize,
-        first_free_block: ?Skip,
         skip: [*]Skip, // capacity + 1
         data: [*]Data, // capacity
+        first_free_block: ?Skip,
 
         fn create(gpa: std.mem.Allocator, capacity: usize) !Self {
             std.debug.assert(capacity <= std.math.maxInt(Skip));
@@ -41,9 +41,9 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
 
             return .{
                 .capacity = capacity,
-                .first_free_block = 0,
                 .skip = skip,
                 .data = data,
+                .first_free_block = 0,
             };
         }
 
@@ -53,10 +53,47 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             array.* = undefined;
         }
 
-        fn expand(array: *Self, gpa: std.mem.Allocator, additional_capacity: usize) void {
-            _ = array;
-            _ = gpa;
-            _ = additional_capacity;
+        fn expand(array: *Self, gpa: std.mem.Allocator, additional_capacity: usize) !void {
+            const capacity = array.capacity + additional_capacity;
+            std.debug.assert(capacity <= std.math.maxInt(Skip));
+            const backing_memory = try gpa.alloc(Skip, size(capacity));
+
+            const skip: [*]u16 = backing_memory.ptr;
+            skip[capacity] = 0;
+            const data: [*]Data = @ptrFromInt(std.mem.alignForward(
+                usize,
+                @intFromPtr(backing_memory.ptr) + @sizeOf(Skip) * (capacity + 1),
+                @alignOf(T),
+            ));
+
+            @memcpy(skip, array.skip[0..array.capacity]);
+            @memcpy(data, array.data[0..array.capacity]);
+
+            // setup skip list and free block
+            // a) the array does not end with a free block - create new and add to list
+            // b) the array ends with a free block - extend it
+            if (skip[array.capacity - 1] == 0) {
+                skip[array.capacity] = @intCast(additional_capacity);
+                skip[capacity - 1] = @intCast(additional_capacity);
+                data[array.capacity] = .{ .node = .{
+                    .prev = @intCast(array.capacity),
+                    .next = array.first_free_block orelse @intCast(array.capacity),
+                } };
+                if (array.first_free_block) |first| {
+                    data[first].node.prev = @intCast(array.capacity);
+                }
+                array.first_free_block = @intCast(array.capacity);
+            } else {
+                const new_block_len = skip[array.capacity - 1] + additional_capacity;
+                skip[array.capacity - skip[array.capacity - 1]] = @intCast(new_block_len);
+                skip[capacity - 1] = @intCast(new_block_len);
+            }
+
+            gpa.free(array.skip[0..size(array.capacity)]);
+
+            array.capacity = capacity;
+            array.skip = skip;
+            array.data = data;
         }
 
         fn size(capacity: usize) usize {
@@ -329,6 +366,47 @@ test "SkipArray" {
                 try std.testing.expect(n_found == 1);
             }
         }
+    }
+}
+
+test "SkipArray expand" {
+    // TODO how should we test that this is expected behaviour? debugPrint looks fine though...
+    {
+        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
+        defer a.destroy(std.testing.allocator);
+        // a.debugPrint();
+        try a.expand(std.testing.allocator, 1);
+        // a.debugPrint();
+    }
+
+    {
+        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
+        defer a.destroy(std.testing.allocator);
+        _ = a.insertAssumeCapacity(0);
+        _ = a.insertAssumeCapacity(1);
+        // a.debugPrint();
+        try a.expand(std.testing.allocator, 1);
+        // a.debugPrint();
+    }
+
+    {
+        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
+        defer a.destroy(std.testing.allocator);
+        _ = a.insertAssumeCapacity(0);
+        // a.debugPrint();
+        try a.expand(std.testing.allocator, 1);
+        // a.debugPrint();
+    }
+
+    {
+        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, 2);
+        defer a.destroy(std.testing.allocator);
+        _ = a.insertAssumeCapacity(0);
+        _ = a.insertAssumeCapacity(1);
+        _ = a.erase(0);
+        // a.debugPrint();
+        try a.expand(std.testing.allocator, 1);
+        // a.debugPrint();
     }
 }
 
