@@ -94,9 +94,12 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
 
             if (free_block_len > 1) {
                 data[ix + 1] = .{ .node = .{
-                    .prev = @intCast(ix + 1),
+                    .prev = ix + 1,
                     .next = if (free_block.next != ix) free_block.next else @intCast(ix + 1),
                 } };
+                if (free_block.next != ix) {
+                    data[free_block.next].node.prev = ix + 1;
+                }
                 array.first_free_block.? += 1;
             } else {
                 // free block is exhausted, remove from free list
@@ -240,36 +243,93 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
 
 test "SkipArray" {
     const N = 10;
-    var ixs: std.ArrayList(u16) = .empty;
-    defer ixs.deinit(std.testing.allocator);
+    const M = 10_000;
     var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
     const rand = rng.random();
 
-    var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
-    defer a.destroy(std.testing.allocator);
-    a.debugPrint();
-    try std.testing.expect(a.empty());
+    // {
+    //     var ixs: std.ArrayList(u16) = .empty;
+    //     defer ixs.deinit(std.testing.allocator);
 
-    std.debug.print("--- inserting ---\n", .{});
-    for (0..N) |i| {
-        const ix = a.insertAssumeCapacity(i);
-        try ixs.append(std.testing.allocator, ix);
-        a.debugPrint();
-    }
-    try std.testing.expect(a.full());
+    //     var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
+    //     defer a.destroy(std.testing.allocator);
+    //     a.debugPrint();
+    //     try std.testing.expect(a.empty());
 
-    var it = a.iterator();
-    while (it.next()) |kv| {
-        std.debug.print("{} {}, ", .{ kv.index, kv.value_ptr.* });
-    }
+    //     std.debug.print("--- inserting ---\n", .{});
+    //     for (0..N) |i| {
+    //         const ix = a.insertAssumeCapacity(i);
+    //         try ixs.append(std.testing.allocator, ix);
+    //         a.debugPrint();
+    //     }
+    //     try std.testing.expect(a.full());
 
-    std.debug.print("--- erasing ---\n", .{});
-    rand.shuffle(u16, ixs.items);
-    for (ixs.items) |ix| {
-        _ = a.erase(ix);
-        a.debugPrint();
+    //     std.debug.print("--- erasing ---\n", .{});
+    //     rand.shuffle(u16, ixs.items);
+    //     for (ixs.items) |ix| {
+    //         _ = a.erase(ix);
+    //         a.debugPrint();
+    //     }
+    //     try std.testing.expect(a.empty());
+    // }
+
+    {
+        // repeatedly insert and erase, making sure contents are as expected
+        const Pair = struct { index: u16, value: usize };
+        var ixs: std.ArrayList(Pair) = .empty;
+        defer ixs.deinit(std.testing.allocator);
+
+        var a: SkipArray(usize, u16) = try .create(std.testing.allocator, N);
+        defer a.destroy(std.testing.allocator);
+
+        var n: usize = 0;
+        var i: usize = 0;
+        var it = a.iterator();
+
+        for (0..M) |_| {
+            const insert_to = rand.intRangeLessThan(usize, n + 1, N);
+            const erase_to = rand.intRangeLessThan(usize, 0, insert_to);
+
+            while (n < insert_to) : (n += 1) {
+                // std.debug.print("inserting {}\n", .{i});
+                const ix = a.insertAssumeCapacity(i);
+                // a.debugPrint();
+                try ixs.append(std.testing.allocator, .{ .index = ix, .value = i });
+                i += 1;
+            }
+
+            it = a.iterator();
+            while (it.next()) |kv| {
+                var n_found: usize = 0;
+                for (ixs.items) |kv2| {
+                    if (kv.index != kv2.index) continue;
+                    try std.testing.expect(kv.value_ptr.* == kv2.value);
+                    n_found += 1;
+                }
+                try std.testing.expect(n_found == 1);
+            }
+
+            rand.shuffle(Pair, ixs.items);
+
+            while (n > erase_to) : (n -= 1) {
+                const kv = ixs.pop().?;
+                // std.debug.print("erasing {}\n", .{kv.index});
+                _ = a.erase(kv.index);
+                // a.debugPrint();
+            }
+
+            it = a.iterator();
+            while (it.next()) |kv| {
+                var n_found: usize = 0;
+                for (ixs.items) |kv2| {
+                    if (kv.index != kv2.index) continue;
+                    try std.testing.expect(kv.value_ptr.* == kv2.value);
+                    n_found += 1;
+                }
+                try std.testing.expect(n_found == 1);
+            }
+        }
     }
-    try std.testing.expect(a.empty());
 }
 
 pub fn Hive(comptime T: type) type {
