@@ -415,6 +415,26 @@ test "SkipArray expand" {
     }
 }
 
+pub const Index = enum(u64) {
+    _,
+
+    fn toLocation(ix: Index) Location {
+        const x: u64 = @intFromEnum(ix);
+        return @bitCast(x);
+    }
+
+    fn fromLocation(loc: Location) Index {
+        const x: u64 = @bitCast(loc);
+        return @enumFromInt(x);
+    }
+
+    const Location = packed struct(u64) {
+        offset: u16,
+        _pad: u16 = 0xAAAA,
+        segment: u32,
+    };
+};
+
 pub fn Hive(comptime T: type) type {
     const segment_min_capacity = @max(1, 64 / @sizeOf(T));
     const segments_initial_capacity = 2;
@@ -483,12 +503,45 @@ pub fn Hive(comptime T: type) type {
                 hive.capacity += capacity;
             }
         }
+
+        pub fn insert(hive: *Self, gpa: std.mem.Allocator, value: T) !Index {
+            try hive.ensureUnusedCapacity(gpa, 1);
+            return hive.insertAssumeCapacity(value);
+        }
+
+        pub fn insertAssumeCapacity(hive: *Self, value: T) Index {
+            const first_free_segment = hive.first_free_segment.?;
+            const segment = hive.segments.getPtr(first_free_segment);
+            const offset = segment.array.insertAssumeCapacity(value);
+
+            if (segment.array.full()) {
+                if (segment.next == first_free_segment) {
+                    std.debug.assert(segment.prev == first_free_segment);
+                    hive.first_free_segment = null;
+                } else {
+                    hive.segments.getPtr(segment.next).prev = segment.next;
+                    hive.first_free_segment = segment.next;
+                }
+            }
+
+            hive.len += 1;
+
+            return .fromLocation(.{
+                .segment = first_free_segment,
+                .offset = offset,
+            });
+        }
     };
 }
 
 test "Hive" {
     var h: Hive(usize) = try .init(std.testing.allocator);
     defer h.deinit(std.testing.allocator);
+
+    for (0..10) |i| {
+        const ix = try h.insert(std.testing.allocator, i);
+        std.debug.print("{}\n", .{ix.toLocation()});
+    }
 }
 
 pub fn OldHive(comptime T: type) type {
