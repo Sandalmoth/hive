@@ -23,7 +23,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             const backing_memory = try gpa.alloc(Skip, size(capacity));
 
             // (sub)allocate and setup skiplist
-            const skip: [*]u16 = backing_memory.ptr;
+            const skip: [*]Skip = backing_memory.ptr;
             skip[0] = @intCast(capacity);
             skip[capacity - 1] = @intCast(capacity);
             skip[capacity] = 0;
@@ -58,7 +58,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             std.debug.assert(capacity <= std.math.maxInt(Skip));
             const backing_memory = try gpa.alloc(Skip, size(capacity));
 
-            const skip: [*]u16 = backing_memory.ptr;
+            const skip: [*]Skip = backing_memory.ptr;
             skip[capacity] = 0;
             const data: [*]Data = @ptrFromInt(std.mem.alignForward(
                 usize,
@@ -222,6 +222,11 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             } else unreachable;
 
             return value;
+        }
+
+        fn getPtr(array: *Self, ix: Skip) *T {
+            std.debug.assert(array.skip[ix] == 0);
+            return &array.data[ix].value;
         }
 
         const Iterator = struct {
@@ -411,7 +416,9 @@ test "SkipArray expand" {
 }
 
 pub fn Hive(comptime T: type) type {
-    const segments_initial_capacity = 4;
+    const segment_min_capacity = @max(1, 64 / @sizeOf(T));
+    const segments_initial_capacity = 2;
+
     return struct {
         const Self = @This();
 
@@ -427,7 +434,7 @@ pub fn Hive(comptime T: type) type {
         first_free_segment: ?u32,
         reserve: ?Segment,
 
-        pub fn init(gpa: std.mem.Allocator) !Hive {
+        pub fn init(gpa: std.mem.Allocator) !Self {
             const segments = try SkipArray(Segment, u32).init(gpa, segments_initial_capacity);
             return .{
                 .capacity = 0,
@@ -450,11 +457,38 @@ pub fn Hive(comptime T: type) type {
             gpa: std.mem.Allocator,
             additional_count: usize,
         ) !void {
-            _ = hive;
-            _ = gpa;
-            _ = additional_count;
+            while (hive.capacity < hive.len + additional_count) {
+                // allocate new segments until we have enough capacity
+                if (hive.segments.full()) {
+                    try hive.segments.expand(gpa, (hive.segments.capacity * 13) >> 4);
+                }
+                const capacity: usize = std.math.clamp(
+                    (hive.capacity * 13) >> 4,
+                    segment_min_capacity,
+                    std.math.maxInt(u16),
+                );
+                // TODO use reserve if available
+                const ix = hive.segments.insertAssumeCapacity(.{
+                    .array = try .init(gpa, capacity),
+                    .next = undefined,
+                    .prev = undefined,
+                });
+                // stick the new segment on the list of segments with free slots
+                const segment = hive.segments.getPtr(ix);
+                segment.prev = ix;
+                segment.next = hive.first_free_segment orelse ix;
+                if (hive.first_free_segment) |free| hive.segments.getPtr(free).prev = ix;
+                hive.first_free_segment = ix;
+
+                hive.capacity += capacity;
+            }
         }
     };
+}
+
+test "Hive" {
+    var h: Hive(usize) = try .init(std.testing.allocator);
+    defer h.deinit(std.testing.allocator);
 }
 
 pub fn OldHive(comptime T: type) type {
