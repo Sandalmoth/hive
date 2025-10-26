@@ -546,6 +546,7 @@ pub fn Hive(comptime T: type) type {
 
             if (was_full) {
                 // add to segment free list
+                if (hive.first_free_segment) |first| hive.segments.getPtr(first).prev = loc.segment;
                 segment.next = hive.first_free_segment orelse loc.segment;
                 segment.prev = loc.segment;
                 hive.first_free_segment = loc.segment;
@@ -634,6 +635,7 @@ pub fn Hive(comptime T: type) type {
             } else {
                 std.debug.print("[hive is full]", .{});
             }
+            std.debug.print("\n", .{});
         }
     };
 }
@@ -662,7 +664,7 @@ test "Hive" {
     rand.shuffle(Index, ixs.items);
     h.debugPrint();
     for (ixs.items) |ix| {
-        std.debug.print("{} {}\n", .{ ix, h.erase(std.testing.allocator, ix) });
+        std.debug.print("erasing {} {}\n", .{ ix.toLocation(), h.erase(std.testing.allocator, ix) });
         h.debugPrint();
     }
 }
