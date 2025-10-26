@@ -235,15 +235,20 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
                 value_ptr: *T,
             };
 
+            const Cursor =
+                switch (Skip) {
+                    u16 => u32,
+                    u32 => u64,
+                    else => @compileError("unsupported skipfield size"),
+                };
+
             array: *Self,
-            cursor: switch (Skip) {
-                u16 => u32,
-                u32 => u64,
-                else => @compileError("unsupported skipfield size"),
-            },
+            cursor: Cursor,
+
+            const dummy: Iterator = .{ .array = undefined, .cursor = std.math.maxInt(Cursor) };
 
             fn next(it: *Iterator) ?Pair {
-                if (it.cursor >= it.array.capacity) return null;
+                if (it.cursor == std.math.maxInt(Cursor) or it.cursor >= it.array.capacity) return null;
                 const pair: Pair = .{
                     .index = @intCast(it.cursor),
                     .value_ptr = &it.array.data[it.cursor].value,
@@ -531,6 +536,34 @@ pub fn Hive(comptime T: type) type {
                 .offset = offset,
             });
         }
+
+        const Iterator = struct {
+            const Pair = struct {
+                index: Index,
+                value_ptr: *T,
+            };
+
+            segment: SkipArray(Segment, u32).Iterator,
+            offset: SkipArray(T, u16).Iterator,
+
+            pub fn next(it: *Iterator) ?Pair {
+                const kv = it.offset.next() orelse {
+                    it.offset = (it.segment.next() orelse return null).value_ptr.array.iterator();
+                    return it.next();
+                };
+                return .{
+                    .index = .fromLocation(.{
+                        .segment = @intCast(it.segment.cursor),
+                        .offset = kv.index,
+                    }),
+                    .value_ptr = kv.value_ptr,
+                };
+            }
+        };
+
+        pub fn iterator(hive: *Self) Iterator {
+            return .{ .segment = hive.segments.iterator(), .offset = .dummy };
+        }
     };
 }
 
@@ -538,9 +571,14 @@ test "Hive" {
     var h: Hive(usize) = try .init(std.testing.allocator);
     defer h.deinit(std.testing.allocator);
 
-    for (0..10) |i| {
+    for (0..100) |i| {
         const ix = try h.insert(std.testing.allocator, i);
         std.debug.print("{}\n", .{ix.toLocation()});
+    }
+
+    var it = h.iterator();
+    while (it.next()) |kv| {
+        std.debug.print("{} {}\n", .{ kv.index.toLocation(), kv.value_ptr.* });
     }
 }
 
