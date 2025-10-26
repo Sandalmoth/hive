@@ -157,6 +157,7 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
             const skip = array.skip;
             const data = array.data;
 
+            std.debug.assert(skip[ix] == 0);
             const value = data[ix].value;
 
             const skip_left = if (ix == 0) 0 else skip[ix - 1];
@@ -537,6 +538,47 @@ pub fn Hive(comptime T: type) type {
             });
         }
 
+        pub fn erase(hive: *Self, gpa: std.mem.Allocator, ix: Index) T {
+            const loc = ix.toLocation();
+            const segment = hive.segments.getPtr(loc.segment);
+            const was_full = segment.array.full();
+            const value = segment.array.erase(loc.offset);
+
+            if (was_full) {
+                // add to segment free list
+                segment.next = hive.first_free_segment orelse loc.segment;
+                segment.prev = loc.segment;
+                hive.first_free_segment = loc.segment;
+            }
+
+            if (segment.array.empty()) {
+                var s = hive.segments.erase(loc.segment);
+
+                // remove from segment free list
+                if (s.prev != loc.segment) {
+                    hive.segments.getPtr(s.prev).next = if (s.next != loc.segment) s.next else s.prev;
+                } else {
+                    hive.first_free_segment = if (s.next != loc.segment) s.next else null;
+                }
+                if (s.next != loc.segment) {
+                    hive.segments.getPtr(s.next).prev = if (s.prev != loc.segment) s.prev else s.next;
+                }
+
+                hive.capacity -= s.array.capacity;
+
+                if (hive.reserve != null and hive.reserve.?.array.capacity < s.array.capacity) {
+                    hive.reserve.?.array.deinit(gpa);
+                    hive.reserve = s;
+                } else {
+                    s.array.deinit(gpa);
+                }
+            }
+
+            hive.len -= 1;
+
+            return value;
+        }
+
         const Iterator = struct {
             const Pair = struct {
                 index: Index,
@@ -564,21 +606,64 @@ pub fn Hive(comptime T: type) type {
         pub fn iterator(hive: *Self) Iterator {
             return .{ .segment = hive.segments.iterator(), .offset = .dummy };
         }
+
+        fn debugPrint(hive: *Self) void {
+            std.debug.print(
+                "Hive <{s}>, len/capacity: {}/{}\n",
+                .{ @typeName(T), hive.len, hive.capacity },
+            );
+            hive.segments.debugPrint();
+            var it = hive.segments.iterator();
+            while (it.next()) |segment| {
+                std.debug.print(
+                    "Segment, prev: {} next: {}, ",
+                    .{ segment.value_ptr.prev, segment.value_ptr.next },
+                );
+                segment.value_ptr.array.debugPrint();
+            }
+            std.debug.print("segment freelist: ", .{});
+            if (hive.first_free_segment) |first_free_block| {
+                var i = first_free_block;
+                while (true) {
+                    const node = hive.segments.getPtr(i);
+                    std.debug.print("({} [{}] {})", .{ node.prev, i, node.next });
+                    if (node.next == i) break;
+                    std.debug.print("->", .{});
+                    i = node.next;
+                }
+            } else {
+                std.debug.print("[hive is full]", .{});
+            }
+        }
     };
 }
 
 test "Hive" {
+    var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
+    const rand = rng.random();
+
     var h: Hive(usize) = try .init(std.testing.allocator);
     defer h.deinit(std.testing.allocator);
 
-    for (0..100) |i| {
+    var ixs: std.ArrayList(Index) = .empty;
+    defer ixs.deinit(std.testing.allocator);
+
+    for (0..20) |i| {
         const ix = try h.insert(std.testing.allocator, i);
         std.debug.print("{}\n", .{ix.toLocation()});
+        try ixs.append(std.testing.allocator, ix);
     }
 
     var it = h.iterator();
     while (it.next()) |kv| {
         std.debug.print("{} {}\n", .{ kv.index.toLocation(), kv.value_ptr.* });
+    }
+
+    rand.shuffle(Index, ixs.items);
+    h.debugPrint();
+    for (ixs.items) |ix| {
+        std.debug.print("{} {}\n", .{ ix, h.erase(std.testing.allocator, ix) });
+        h.debugPrint();
     }
 }
 
