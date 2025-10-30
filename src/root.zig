@@ -243,25 +243,37 @@ fn SkipArray(comptime T: type, comptime Skip: type) type {
                     else => @compileError("unsupported skipfield size"),
                 };
 
-            array: *Self,
             cursor: Cursor,
+            capacity: usize,
+            data: [*]Data,
+            skip: [*]Skip,
 
-            const dummy: Iterator = .{ .array = undefined, .cursor = std.math.maxInt(Cursor) };
+            const dummy: Iterator = .{
+                .cursor = std.math.maxInt(Cursor),
+                .capacity = 0,
+                .data = undefined,
+                .skip = undefined,
+            };
 
             fn next(it: *Iterator) ?Pair {
-                if (it.cursor == std.math.maxInt(Cursor) or it.cursor >= it.array.capacity) return null;
+                if (it.cursor >= it.capacity) return null;
                 const pair: Pair = .{
                     .index = @intCast(it.cursor),
-                    .value_ptr = &it.array.data[it.cursor].value,
+                    .value_ptr = &it.data[it.cursor].value,
                 };
                 it.cursor += 1;
-                it.cursor += it.array.skip[it.cursor];
+                it.cursor += it.skip[it.cursor];
                 return pair;
             }
         };
 
         fn iterator(array: *Self) Iterator {
-            return .{ .array = array, .cursor = array.skip[0] };
+            return .{
+                .cursor = array.skip[0],
+                .capacity = array.capacity,
+                .data = array.data,
+                .skip = array.skip,
+            };
         }
 
         fn debugPrint(array: Self) void {
