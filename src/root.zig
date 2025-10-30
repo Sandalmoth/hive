@@ -307,32 +307,6 @@ test "SkipArray" {
     var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
     const rand = rng.random();
 
-    // {
-    //     var ixs: std.ArrayList(u16) = .empty;
-    //     defer ixs.deinit(std.testing.allocator);
-
-    //     var a: SkipArray(usize, u16) = try .init(std.testing.allocator, N);
-    //     defer a.deinit(std.testing.allocator);
-    //     a.debugPrint();
-    //     try std.testing.expect(a.empty());
-
-    //     std.debug.print("--- inserting ---\n", .{});
-    //     for (0..N) |i| {
-    //         const ix = a.insertAssumeCapacity(i);
-    //         try ixs.append(std.testing.allocator, ix);
-    //         a.debugPrint();
-    //     }
-    //     try std.testing.expect(a.full());
-
-    //     std.debug.print("--- erasing ---\n", .{});
-    //     rand.shuffle(u16, ixs.items);
-    //     for (ixs.items) |ix| {
-    //         _ = a.erase(ix);
-    //         a.debugPrint();
-    //     }
-    //     try std.testing.expect(a.empty());
-    // }
-
     {
         // repeatedly insert and erase, making sure contents are as expected
         const Pair = struct { index: u16, value: usize };
@@ -679,31 +653,7 @@ test "Hive" {
     var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
     const rand = rng.random();
 
-    // var h2: Hive(usize) = try .init(std.testing.allocator);
-    // defer h2.deinit(std.testing.allocator);
-
-    // var ixs2: std.ArrayList(Index) = .empty;
-    // defer ixs2.deinit(std.testing.allocator);
-
-    // for (0..20) |i| {
-    //     const ix = try h2.insert(std.testing.allocator, i);
-    //     std.debug.print("{}\n", .{ix.toLocation()});
-    //     try ixs2.append(std.testing.allocator, ix);
-    // }
-
-    // var it2 = h2.iterator();
-    // while (it2.next()) |kv| {
-    //     std.debug.print("{} {}\n", .{ kv.index.toLocation(), kv.value_ptr.* });
-    // }
-
-    // rand.shuffle(Index, ixs2.items);
-    // h2.debugPrint();
-    // for (ixs2.items) |ix| {
-    //     std.debug.print("erasing {} {}\n", .{ ix.toLocation(), h2.erase(std.testing.allocator, ix) });
-    //     h2.debugPrint();
-    // }
-
-    if (true) {
+    {
         // repeatedly insert and erase, making sure contents are as expected
         const Pair = struct { index: Index, value: usize };
         var ixs: std.ArrayList(Pair) = .empty;
