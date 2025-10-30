@@ -356,6 +356,7 @@ test "SkipArray" {
                 }
                 try std.testing.expect(n_found == 1);
             }
+            for (ixs.items) |kv| try std.testing.expect(a.getPtr(kv.index).* == kv.value);
 
             rand.shuffle(Pair, ixs.items);
 
@@ -376,6 +377,7 @@ test "SkipArray" {
                 }
                 try std.testing.expect(n_found == 1);
             }
+            for (ixs.items) |kv| try std.testing.expect(a.getPtr(kv.index).* == kv.value);
         }
     }
 }
@@ -580,6 +582,12 @@ pub fn Hive(comptime T: type) type {
             return value;
         }
 
+        pub fn getPtr(hive: *Self, ix: Index) *T {
+            const loc = ix.toLocation();
+            const segment = hive.segments.getPtr(loc.segment);
+            return segment.array.getPtr(loc.offset);
+        }
+
         const Iterator = struct {
             const Pair = struct {
                 index: Index,
@@ -641,31 +649,91 @@ pub fn Hive(comptime T: type) type {
 }
 
 test "Hive" {
+    const N = 1_0;
+    const M = 1_000;
     var rng = std.Random.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
     const rand = rng.random();
 
-    var h: Hive(usize) = try .init(std.testing.allocator);
-    defer h.deinit(std.testing.allocator);
+    // var h2: Hive(usize) = try .init(std.testing.allocator);
+    // defer h2.deinit(std.testing.allocator);
 
-    var ixs: std.ArrayList(Index) = .empty;
-    defer ixs.deinit(std.testing.allocator);
+    // var ixs2: std.ArrayList(Index) = .empty;
+    // defer ixs2.deinit(std.testing.allocator);
 
-    for (0..20) |i| {
-        const ix = try h.insert(std.testing.allocator, i);
-        std.debug.print("{}\n", .{ix.toLocation()});
-        try ixs.append(std.testing.allocator, ix);
-    }
+    // for (0..20) |i| {
+    //     const ix = try h2.insert(std.testing.allocator, i);
+    //     std.debug.print("{}\n", .{ix.toLocation()});
+    //     try ixs2.append(std.testing.allocator, ix);
+    // }
 
-    var it = h.iterator();
-    while (it.next()) |kv| {
-        std.debug.print("{} {}\n", .{ kv.index.toLocation(), kv.value_ptr.* });
-    }
+    // var it2 = h2.iterator();
+    // while (it2.next()) |kv| {
+    //     std.debug.print("{} {}\n", .{ kv.index.toLocation(), kv.value_ptr.* });
+    // }
 
-    rand.shuffle(Index, ixs.items);
-    h.debugPrint();
-    for (ixs.items) |ix| {
-        std.debug.print("erasing {} {}\n", .{ ix.toLocation(), h.erase(std.testing.allocator, ix) });
-        h.debugPrint();
+    // rand.shuffle(Index, ixs2.items);
+    // h2.debugPrint();
+    // for (ixs2.items) |ix| {
+    //     std.debug.print("erasing {} {}\n", .{ ix.toLocation(), h2.erase(std.testing.allocator, ix) });
+    //     h2.debugPrint();
+    // }
+
+    if (true) {
+        // repeatedly insert and erase, making sure contents are as expected
+        const Pair = struct { index: Index, value: usize };
+        var ixs: std.ArrayList(Pair) = .empty;
+        defer ixs.deinit(std.testing.allocator);
+
+        var h: Hive(usize) = try .init(std.testing.allocator);
+        defer h.deinit(std.testing.allocator);
+
+        var n: usize = 0;
+        var i: usize = 0;
+        var it = h.iterator();
+
+        for (0..M) |_| {
+            const insert_to = rand.intRangeLessThan(usize, n + 1, N);
+            const erase_to = rand.intRangeLessThan(usize, 0, insert_to);
+
+            while (n < insert_to) : (n += 1) {
+                // std.debug.print("inserting {}\n", .{i});
+                const ix = h.insertAssumeCapacity(i);
+                // a.debugPrint();
+                try ixs.append(std.testing.allocator, .{ .index = ix, .value = i });
+                i += 1;
+            }
+
+            it = h.iterator();
+            while (it.next()) |kv| {
+                var n_found: usize = 0;
+                for (ixs.items) |kv2| {
+                    if (kv.index != kv2.index) continue;
+                    try std.testing.expect(kv.value_ptr.* == kv2.value);
+                    n_found += 1;
+                }
+                try std.testing.expect(n_found == 1);
+            }
+            for (ixs.items) |kv| try std.testing.expect(h.getPtr(kv.index).* == kv.value);
+
+            rand.shuffle(Pair, ixs.items);
+
+            while (n > erase_to) : (n -= 1) {
+                const kv = ixs.pop().?;
+                _ = h.erase(std.testing.allocator, kv.index);
+            }
+
+            it = h.iterator();
+            while (it.next()) |kv| {
+                var n_found: usize = 0;
+                for (ixs.items) |kv2| {
+                    if (kv.index != kv2.index) continue;
+                    try std.testing.expect(kv.value_ptr.* == kv2.value);
+                    n_found += 1;
+                }
+                try std.testing.expect(n_found == 1);
+            }
+            for (ixs.items) |kv| try std.testing.expect(h.getPtr(kv.index).* == kv.value);
+        }
     }
 }
 
