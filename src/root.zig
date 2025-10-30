@@ -477,6 +477,7 @@ pub fn Hive(comptime T: type) type {
             var it = hive.segments.iterator();
             while (it.next()) |kv| kv.value_ptr.array.deinit(gpa);
             hive.segments.deinit(gpa);
+            if (hive.reserve) |*reserve| reserve.array.deinit(gpa);
             hive.* = undefined;
         }
 
@@ -490,17 +491,24 @@ pub fn Hive(comptime T: type) type {
                 if (hive.segments.full()) {
                     try hive.segments.expand(gpa, (hive.segments.capacity * 13) >> 4);
                 }
-                const capacity: usize = std.math.clamp(
+                var capacity: usize = std.math.clamp(
                     (hive.capacity * 13) >> 4,
                     segment_min_capacity,
                     std.math.maxInt(u16),
                 );
                 // TODO use reserve if available
-                const ix = hive.segments.insertAssumeCapacity(.{
-                    .array = try .init(gpa, capacity),
-                    .next = undefined,
-                    .prev = undefined,
-                });
+                var ix: u32 = undefined;
+                if (hive.reserve) |reserve| {
+                    ix = hive.segments.insertAssumeCapacity(reserve);
+                    capacity = reserve.array.capacity;
+                    hive.reserve = null;
+                } else {
+                    ix = hive.segments.insertAssumeCapacity(.{
+                        .array = try .init(gpa, capacity),
+                        .next = undefined,
+                        .prev = undefined,
+                    });
+                }
                 // stick the new segment on the list of segments with free slots
                 const segment = hive.segments.getPtr(ix);
                 segment.prev = ix;
@@ -569,7 +577,9 @@ pub fn Hive(comptime T: type) type {
 
                 hive.capacity -= s.array.capacity;
 
-                if (hive.reserve != null and hive.reserve.?.array.capacity < s.array.capacity) {
+                if (hive.reserve == null) {
+                    hive.reserve = s;
+                } else if (hive.reserve.?.array.capacity < s.array.capacity) {
                     hive.reserve.?.array.deinit(gpa);
                     hive.reserve = s;
                 } else {
